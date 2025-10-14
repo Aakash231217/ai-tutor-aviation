@@ -28,6 +28,8 @@ model File {
   messages Message[]
   images   ExtractedImage[]
   chapters Chapter[]
+  studentProgress StudentProgress?
+  quizQuestions QuizQuestion[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -111,5 +113,43 @@ model Topic {
   
   @@unique([chapterId, topicNumber])
   @@index([chapterId])
+}
+
+model StudentProgress {
+  id                String   @id @default(cuid())
+  fileId            String
+  currentChapter    Int      @default(1)
+  currentTopic      Int?
+  completedChapters Int[]    @default([])
+  completedTopics   String[] @default([]) // Array of topic IDs
+  quizScores        Json     @default("{}") // Chapter number -> score mapping
+  lastInteraction   DateTime @default(now())
+  isFirstTime       Boolean  @default(true)
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  file              File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@unique([fileId])
+  @@index([fileId])
+}
+
+model QuizQuestion {
+  id            String   @id @default(cuid())
+  fileId        String
+  chapterNumber Int
+  question      String   @db.Text()
+  options       Json     // Array of options
+  correctAnswer String
+  explanation   String   @db.Text()
+  difficulty    String   // easy, medium, hard
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  file          File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@index([fileId, chapterNumber])
 }
 

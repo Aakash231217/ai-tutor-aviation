@@ -198,63 +198,123 @@ export const appRouter = router({
       return chapter
     }),
 
-  // Learning session endpoints
-  createOrGetSession: publicProcedure
-    .input(z.object({ 
-      fileId: z.string(),
-      sessionKey: z.string()
-    }))
-    .mutation(async ({ input }) => {
-      // Try to find existing session
-      let session = await db.learningSession.findUnique({
-        where: { sessionKey: input.sessionKey }
+
+  // Student Progress endpoints
+  getStudentProgress: publicProcedure
+    .input(z.object({ fileId: z.string() }))
+    .query(async ({ input }) => {
+      const progress = await db.studentProgress.findUnique({
+        where: { fileId: input.fileId }
       })
 
-      // Create new session if doesn't exist
-      if (!session) {
-        session = await db.learningSession.create({
-          data: {
-            fileId: input.fileId,
-            sessionKey: input.sessionKey,
-            state: 'greeting',
-            progress: {}
-          }
+      return progress
+    }),
+
+  updateStudentProgress: publicProcedure
+    .input(z.object({
+      fileId: z.string(),
+      currentChapter: z.number().optional(),
+      currentTopic: z.number().optional(),
+      completedChapter: z.number().optional(),
+      completedTopic: z.string().optional(),
+      quizScore: z.object({
+        chapter: z.number(),
+        score: z.number()
+      }).optional()
+    }))
+    .mutation(async ({ input }) => {
+      const { fileId, completedChapter, completedTopic, quizScore, ...updateData } = input
+      
+      let progress = await db.studentProgress.findUnique({
+        where: { fileId }
+      })
+
+      if (!progress) {
+        progress = await db.studentProgress.create({
+          data: { fileId }
         })
       }
 
-      return session
+      const updates: any = { ...updateData }
+      
+      if (completedChapter !== undefined) {
+        updates.completedChapters = {
+          push: completedChapter
+        }
+      }
+      
+      if (completedTopic !== undefined) {
+        updates.completedTopics = {
+          push: completedTopic
+        }
+      }
+      
+      if (quizScore) {
+        const currentScores = progress.quizScores as any || {}
+        currentScores[quizScore.chapter] = quizScore.score
+        updates.quizScores = currentScores
+      }
+
+      const updatedProgress = await db.studentProgress.update({
+        where: { id: progress.id },
+        data: updates
+      })
+
+      return updatedProgress
     }),
 
-  updateSessionState: publicProcedure
+  // Quiz endpoints
+  getQuizQuestions: publicProcedure
+    .input(z.object({ 
+      fileId: z.string(),
+      chapterNumber: z.number(),
+      limit: z.number().default(10)
+    }))
+    .query(async ({ input }) => {
+      const questions = await db.quizQuestion.findMany({
+        where: { 
+          fileId: input.fileId,
+          chapterNumber: input.chapterNumber
+        },
+        take: input.limit,
+        orderBy: { createdAt: 'asc' }
+      })
+
+      return questions
+    }),
+
+  generateQuizQuestions: publicProcedure
     .input(z.object({
-      sessionId: z.string(),
-      state: z.string(),
-      currentChapterId: z.string().optional(),
-      currentTopicId: z.string().optional(),
-      progress: z.any().optional()
+      fileId: z.string(),
+      chapterNumber: z.number()
     }))
     .mutation(async ({ input }) => {
-      const session = await db.learningSession.update({
-        where: { id: input.sessionId },
-        data: {
-          state: input.state,
-          currentChapterId: input.currentChapterId,
-          currentTopicId: input.currentTopicId,
-          progress: input.progress || undefined
+      // Check if questions already exist
+      const existing = await db.quizQuestion.findFirst({
+        where: {
+          fileId: input.fileId,
+          chapterNumber: input.chapterNumber
         }
       })
 
-      return session
-    }),
+      if (existing) {
+        return { message: 'Questions already exist for this chapter' }
+      }
 
-  getSession: publicProcedure
-    .input(z.object({ sessionKey: z.string() }))
-    .query(async ({ input }) => {
-      const session = await db.learningSession.findUnique({
-        where: { sessionKey: input.sessionKey }
+      // Get chapter content
+      const chapter = await db.chapter.findFirst({
+        where: {
+          fileId: input.fileId,
+          chapterNumber: input.chapterNumber
+        }
       })
 
-      return session
+      if (!chapter) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Chapter not found' })
+      }
+
+      // This will be handled by the teacher-chat route
+      return { message: 'Quiz generation initiated' }
     }),
 })
 

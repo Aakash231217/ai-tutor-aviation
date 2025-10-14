@@ -8,6 +8,7 @@ import Link from 'next/link'
 import { buttonVariants } from '../ui/button'
 import { ChatContextProvider } from './ChatContext'
 import { VoiceSettings } from '../VoiceSettings'
+import { StudentProgress } from './StudentProgress'
 import { useState } from 'react'
 
 interface ChatWrapperProps {
@@ -108,6 +109,9 @@ const ChatWrapper = ({
         </div>
         
         <div className='flex-1 justify-between flex flex-col mb-28 pt-14'>
+          <div className='px-4'>
+            <StudentProgress fileId={fileId} />
+          </div>
           <Messages fileId={fileId} />
         </div>
 

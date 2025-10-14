@@ -49,7 +49,7 @@ export const ChatContextProvider = ({
     }: {
       message: string
     }) => {
-      const response = await fetch('/api/message', {
+      const response = await fetch('/api/teacher-chat', {
         method: 'POST',
         body: JSON.stringify({
           fileId,
@@ -64,8 +64,12 @@ export const ChatContextProvider = ({
       // Extract images data from header
       const imagesData = response.headers.get('X-Images-Data')
       const images = imagesData ? JSON.parse(imagesData) : []
+      
+      // Extract progress data from header
+      const progressData = response.headers.get('X-Progress-Data')
+      const progress = progressData ? JSON.parse(progressData) : null
 
-      return { body: response.body, images }
+      return { body: response.body, images, progress }
     },
     onMutate: async ({ message }) => {
       backupMessage.current = message
