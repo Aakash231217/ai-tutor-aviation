@@ -48,6 +48,7 @@ export const appRouter = router({
           isUserMessage: true,
           createdAt: true,
           text: true,
+          fileId: true,
         },
       })
 
@@ -315,6 +316,157 @@ export const appRouter = router({
 
       // This will be handled by the teacher-chat route
       return { message: 'Quiz generation initiated' }
+    }),
+
+  // Message feedback endpoints
+  submitFeedback: publicProcedure
+    .input(z.object({
+      messageId: z.string(),
+      fileId: z.string(),
+      feedbackType: z.enum(['THUMBS_UP', 'THUMBS_DOWN']),
+      feedbackReason: z.string().optional(),
+      feedbackCategory: z.enum(['TOO_COMPLEX', 'INCORRECT_INFO', 'MISSING_CONTEXT', 'OFF_TOPIC', 'OTHER']).optional(),
+      correctedResponse: z.string().optional()
+    }))
+    .mutation(async ({ input, ctx }) => {
+      // Check if feedback already exists
+      const existing = await db.messageFeedback.findUnique({
+        where: { messageId: input.messageId }
+      })
+
+      if (existing) {
+        // If same feedback type, remove it (toggle off)
+        if (existing.feedbackType === input.feedbackType) {
+          await db.messageFeedback.delete({
+            where: { id: existing.id }
+          })
+          return { feedback: null }
+        }
+        // Otherwise update to new feedback type
+        const updated = await db.messageFeedback.update({
+          where: { id: existing.id },
+          data: {
+            feedbackType: input.feedbackType,
+            feedbackReason: input.feedbackReason,
+            feedbackCategory: input.feedbackCategory,
+            correctedResponse: input.correctedResponse
+          }
+        })
+        return { feedback: updated }
+      }
+
+      // Create new feedback
+      const feedback = await db.messageFeedback.create({
+        data: {
+          messageId: input.messageId,
+          fileId: input.fileId,
+          feedbackType: input.feedbackType,
+          feedbackReason: input.feedbackReason,
+          feedbackCategory: input.feedbackCategory,
+          correctedResponse: input.correctedResponse
+        }
+      })
+
+      return { feedback }
+    }),
+
+  getMessageFeedback: publicProcedure
+    .input(z.object({
+      messageId: z.string()
+    }))
+    .query(async ({ input }) => {
+      const feedback = await db.messageFeedback.findUnique({
+        where: { messageId: input.messageId }
+      })
+      return feedback
+    }),
+
+  getFeedbackStats: publicProcedure
+    .input(z.object({
+      fileId: z.string()
+    }))
+    .query(async ({ input }) => {
+      const feedbacks = await db.messageFeedback.findMany({
+        where: { fileId: input.fileId },
+        include: { message: true }
+      })
+
+      const stats = {
+        total: feedbacks.length,
+        thumbsUp: feedbacks.filter(f => f.feedbackType === 'THUMBS_UP').length,
+        thumbsDown: feedbacks.filter(f => f.feedbackType === 'THUMBS_DOWN').length,
+        byChapter: {} as Record<number, { thumbsUp: number; thumbsDown: number }>
+      }
+
+      // Group by chapters if we have student progress
+      const progress = await db.studentProgress.findUnique({
+        where: { fileId: input.fileId }
+      })
+
+      if (progress) {
+        // Here we could enhance to group feedback by chapters
+        // For now, return basic stats
+      }
+
+      return stats
+    }),
+  
+  getRecentCorrections: publicProcedure
+    .input(z.object({
+      fileId: z.string(),
+      limit: z.number().optional().default(5)
+    }))
+    .query(async ({ input }) => {
+      const corrections = await db.messageFeedback.findMany({
+        where: {
+          fileId: input.fileId,
+          feedbackType: 'THUMBS_DOWN',
+          correctedResponse: {
+            not: null
+          }
+        },
+        include: {
+          message: true
+        },
+        orderBy: {
+          createdAt: 'desc'
+        },
+        take: input.limit
+      })
+      
+      return corrections.map(correction => ({
+        id: correction.id,
+        originalMessage: correction.message.text,
+        correctedResponse: correction.correctedResponse,
+        feedbackCategory: correction.feedbackCategory,
+        createdAt: correction.createdAt
+      }))
+    }),
+    
+  updateCorrection: publicProcedure
+    .input(z.object({
+      id: z.string(),
+      feedbackCategory: z.enum(['TOO_COMPLEX', 'INCORRECT_INFO', 'MISSING_CONTEXT', 'OFF_TOPIC', 'OTHER']).optional(),
+      correctedResponse: z.string()
+    }))
+    .mutation(async ({ input }) => {
+      const updated = await db.messageFeedback.update({
+        where: { id: input.id },
+        data: {
+          feedbackCategory: input.feedbackCategory,
+          correctedResponse: input.correctedResponse,
+          updatedAt: new Date()
+        },
+        include: {
+          message: true
+        }
+      })
+      
+      return {
+        id: updated.id,
+        feedbackCategory: updated.feedbackCategory,
+        correctedResponse: updated.correctedResponse,
+      }
     }),
 })
 

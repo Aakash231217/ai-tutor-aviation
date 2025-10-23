@@ -6,6 +6,7 @@ import { NextRequest } from 'next/server'
 import { StreamingTextResponse } from 'ai'
 import { OpenAI } from 'openai'
 import { teachingSessionManager } from '@/lib/teaching-session'
+import { createImageServer } from '@/lib/context-aware-image-server'
 
 // Helper function to generate quiz questions for a chapter
 async function generateQuizQuestions(chapterContent: string, chapterNumber: number, fileId: string) {
@@ -136,13 +137,31 @@ export const POST = async (req: NextRequest) => {
       include: { topics: true },
       orderBy: { chapterNumber: 'asc' }
     })
+    
+    // Get recent corrections for context
+    const recentCorrections = await db.messageFeedback.findMany({
+      where: {
+        fileId: fileId,
+        feedbackType: 'THUMBS_DOWN',
+        correctedResponse: {
+          not: null
+        }
+      },
+      include: {
+        message: true
+      },
+      orderBy: {
+        createdAt: 'desc'
+      },
+      take: 5
+    })
 
     // Save user message
     await db.message.create({
       data: {
         text: message,
         isUserMessage: true,
-        fileId,
+        fileId: fileId,
       },
     })
 
@@ -224,6 +243,12 @@ export const POST = async (req: NextRequest) => {
             needsVectorSearch = true
           }
         }
+        break
+
+      case 'chapter_navigation':
+        // Handle chapter navigation requests
+        systemPrompt = `You are a helpful teacher. The student is asking about chapters. List ALL the chapters in the book clearly and help them navigate. Be comprehensive and show all ${chapters.length} chapters.`
+        userPrompt = `Student asked: ${message}\n\nComplete list of ALL chapters in the book:\n${chapters.map(ch => `Chapter ${ch.chapterNumber}: ${ch.title}`).join('\n')}\n\nCurrent chapter: ${progress.currentChapter}\nCompleted chapters: ${progress.completedChapters.join(', ') || 'None yet'}`
         break
 
       case 'question':
@@ -400,6 +425,7 @@ export const POST = async (req: NextRequest) => {
     // Perform vector search if needed
     let contextWithPages = ''
     let images: any[] = []
+    let imageContext = ''
     
     if (needsVectorSearch) {
       const embeddings = new OpenAIEmbeddings({
@@ -424,6 +450,8 @@ export const POST = async (req: NextRequest) => {
         metadata: {
           pageNumber: match.metadata?.pageNumber,
           score: match.score,
+          imageIds: match.metadata?.imageIds || [],
+          referencedImageIds: match.metadata?.referencedImageIds || [],
         },
       })) || []
 
@@ -431,6 +459,72 @@ export const POST = async (req: NextRequest) => {
         const pageNum = r.metadata.pageNumber ? `[Page ${r.metadata.pageNumber}]` : '[Page unknown]'
         return `${pageNum} ${r.pageContent}`
       }).join('\n\n')
+      
+      // Fetch extracted images
+      const extractedImages = await db.extractedImage.findMany({
+        where: {
+          fileId: fileId,
+        },
+        orderBy: {
+          relevanceScore: 'desc',
+        },
+      })
+      
+      console.log(`[TEACHER_CHAT] Found ${extractedImages.length} total images for file`)
+      
+      // Create image server
+      const imageServer = createImageServer(
+        extractedImages.map((img) => ({
+          pageNumber: img.pageNumber,
+          imageUrl: img.imageUrl,
+          cloudinaryId: img.cloudinaryId || img.imageKey,
+          contextBefore: img.contextBefore,
+          contextAfter: img.contextAfter,
+          nearbyText: img.nearbyText,
+          topics: img.topics,
+          chapter: img.chapter || undefined,
+          chapterNumber: img.chapterNumber || undefined,
+          relevanceScore: img.relevanceScore,
+          imageCount: img.imageCount,
+        }))
+      )
+      
+      // Find relevant images for this query
+      const relevantImages = imageServer.findRelevantImages(
+        message,
+        contextWithPages,
+        progress.currentChapter,
+        3 // Max 3 images per response
+      )
+      
+      console.log(`[TEACHER_CHAT] Found ${relevantImages.length} relevant images`)
+      relevantImages.forEach((match) => {
+        console.log(
+          `  - Page ${match.image.pageNumber}: Score ${match.relevanceScore.toFixed(1)} - ${match.matchReason}`
+        )
+      })
+      
+      // Decide if we should include images
+      const shouldIncludeImages = imageServer.shouldIncludeImages(
+        message,
+        relevantImages
+      )
+      
+      // Format images for AI response
+      if (shouldIncludeImages && relevantImages.length > 0) {
+        imageContext = '\n\n**AVAILABLE DIAGRAMS:**\n'
+        relevantImages.forEach((match, index) => {
+          const img = match.image
+          imageContext += `\nDiagram ${index + 1} (Page ${img.pageNumber}):\n`
+          if (img.chapter) imageContext += `Chapter: ${img.chapter}\n`
+          if (img.topics.length > 0)
+            imageContext += `Topics: ${img.topics.slice(0, 3).join(', ')}\n`
+          imageContext += `Context: ${img.nearbyText.substring(0, 200)}...\n`
+          imageContext += `Image URL: ${img.imageUrl}\n`
+        })
+        
+        console.log('[TEACHER_CHAT] Including images in response')
+      }
     }
 
     // Update last interaction
@@ -446,6 +540,26 @@ export const POST = async (req: NextRequest) => {
       const currentQ = session.quizSession.currentQuestionIndex
       const totalQ = session.quizSession.questions.length
       enhancedSystemPrompt = `${systemPrompt} Remember: You are currently conducting a quiz. This is question ${currentQ} of ${totalQ}. Stay focused on the quiz and don't start a new topic or conversation.`
+    }
+    
+    // Add image context to system prompt if available
+    if (imageContext && needsVectorSearch) {
+      enhancedSystemPrompt += `\n\n${imageContext}\n\nIf relevant diagrams are available above, reference them in your answer using markdown image syntax: ![Description](URL)`
+    }
+    
+    // Add recent corrections to system prompt
+    if (recentCorrections.length > 0) {
+      enhancedSystemPrompt += `\n\n**IMPORTANT CORRECTIONS FROM PREVIOUS FEEDBACK:**\n`
+      enhancedSystemPrompt += `Students have provided corrections to improve responses. Please incorporate these learnings:\n\n`
+      
+      recentCorrections.forEach((correction: { feedbackCategory: string; message: { text: string }; correctedResponse: string }, index: number) => {
+        const category = correction.feedbackCategory ? `(${correction.feedbackCategory.replace('_', ' ').toLowerCase()})` : ''
+        enhancedSystemPrompt += `${index + 1}. Previous incorrect response ${category}:\n`
+        enhancedSystemPrompt += `   Original: "${correction.message.text.substring(0, 150)}..."\n`
+        enhancedSystemPrompt += `   Corrected: "${correction.correctedResponse?.substring(0, 200)}..."\n\n`
+      })
+      
+      enhancedSystemPrompt += `Use these corrections to provide better, more accurate responses.`
     }
     
     // Create the chat completion
@@ -483,7 +597,7 @@ export const POST = async (req: NextRequest) => {
             data: {
               text: fullResponse,
               isUserMessage: false,
-              fileId,
+              fileId: fileId,
             },
           })
         } catch (error) {

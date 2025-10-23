@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Plus,
   Trash,
+  BarChart3,
 } from 'lucide-react'
 import Skeleton from 'react-loading-skeleton'
 import Link from 'next/link'
@@ -76,15 +77,27 @@ const Dashboard = () => {
                 </Link>
 
                 <div className='px-6 mt-4 py-2 space-y-2'>
-                  <Link href={`/dashboard/${file.id}`}>
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      className='w-full'>
-                      <MessageSquare className='h-4 w-4 mr-2' />
-                      Open Chat
-                    </Button>
-                  </Link>
+                  <div className='grid grid-cols-2 gap-2'>
+                    <Link href={`/dashboard/${file.id}`}>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        className='w-full'>
+                        <MessageSquare className='h-4 w-4 mr-2' />
+                        Chat
+                      </Button>
+                    </Link>
+                    
+                    <Link href={`/dashboard/analytics/${file.id}`}>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        className='w-full'>
+                        <BarChart3 className='h-4 w-4 mr-2' />
+                        Analytics
+                      </Button>
+                    </Link>
+                  </div>
                   
                   <div className='flex items-center justify-between text-xs text-zinc-500'>
                     <div className='flex items-center gap-2'>

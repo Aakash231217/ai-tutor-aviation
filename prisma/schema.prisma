@@ -30,6 +30,7 @@ model File {
   chapters Chapter[]
   studentProgress StudentProgress?
   quizQuestions QuizQuestion[]
+  messageFeedback MessageFeedback[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -45,6 +46,41 @@ model Message {
   updatedAt DateTime @updatedAt
   File      File?    @relation(fields: [fileId], references: [id])
   fileId    String?
+  
+  feedback  MessageFeedback?
+}
+
+enum FeedbackType {
+  THUMBS_UP
+  THUMBS_DOWN
+}
+
+enum FeedbackCategory {
+  TOO_COMPLEX
+  INCORRECT_INFO
+  MISSING_CONTEXT
+  OFF_TOPIC
+  OTHER
+}
+
+model MessageFeedback {
+  id                String            @id @default(cuid())
+  messageId         String            @unique
+  fileId            String
+  feedbackType      FeedbackType
+  feedbackReason    String?           @db.Text()
+  feedbackCategory  FeedbackCategory?
+  correctedResponse String?           @db.Text()
+  
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  
+  message           Message           @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  file              File              @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@index([messageId])
+  @@index([fileId])
+  @@index([feedbackType])
 }
 
 model ExtractedImage {
@@ -52,7 +88,8 @@ model ExtractedImage {
   fileId         String
   pageNumber     Int
   imageUrl       String
-  imageKey       String   // UploadThing key for deletion
+  imageKey       String   // UploadThing key or Cloudinary ID for deletion
+  cloudinaryId   String?  // Cloudinary public ID for smart extraction
   
   // Context
   caption        String?  @db.Text()
@@ -69,6 +106,10 @@ model ExtractedImage {
   // Metadata
   imageType      String?  // diagram, chart, photo, etc.
   topics         String[] // Related topics for better search
+  chapter        String?  // Chapter title if detected
+  chapterNumber  Int?     // Chapter number if detected
+  relevanceScore Int      @default(50) // How important this image is (0-100)
+  imageCount     Int      @default(1) // Number of images on this page
   
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -77,6 +118,8 @@ model ExtractedImage {
   file           File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
   
   @@index([fileId, pageNumber])
+  @@index([fileId, chapterNumber])
+  @@index([fileId, relevanceScore])
 }
 
 model Chapter {

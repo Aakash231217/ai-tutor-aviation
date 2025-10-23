@@ -5,9 +5,11 @@ import ReactMarkdown from 'react-markdown'
 import { format } from 'date-fns'
 import { forwardRef, useState } from 'react'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
+import { useMessageFeedback } from '@/hooks/useMessageFeedback'
 import { Button } from '../ui/button'
-import { Volume2, VolumeX, ZoomIn } from 'lucide-react'
+import { Volume2, VolumeX, ZoomIn, ThumbsUp, ThumbsDown } from 'lucide-react'
 import Image from 'next/image'
+import { FeedbackModal } from '../FeedbackModal'
 
 interface MessageProps {
   message: ExtendedMessage
@@ -17,6 +19,14 @@ interface MessageProps {
 const Message = forwardRef<HTMLDivElement, MessageProps>(
   ({ message, isNextMessageSamePerson }, ref) => {
     const { speak, stop, isSpeaking, isSupported } = useTextToSpeech()
+    const [showFeedbackModal, setShowFeedbackModal] = useState(false)
+    
+    // Initialize feedback hook for AI messages
+    const canProvideFeedback = !message.isUserMessage && message.fileId && message.id !== 'loading-message'
+    const { currentFeedback, handleFeedback, isLoading: isFeedbackLoading } = useMessageFeedback({
+      messageId: message.id,
+      fileId: message.fileId || '',
+    })
 
     const handleSpeak = () => {
       if (isSpeaking) {
@@ -26,7 +36,27 @@ const Message = forwardRef<HTMLDivElement, MessageProps>(
       }
     }
 
+    const handleThumbsUp = () => {
+      handleFeedback('THUMBS_UP')
+    }
+
+    const handleThumbsDown = () => {
+      if (currentFeedback === 'THUMBS_DOWN') {
+        // If already thumbs down, toggle off
+        handleFeedback('THUMBS_DOWN')
+      } else {
+        // Show modal to get correction
+        setShowFeedbackModal(true)
+      }
+    }
+
+    const handleFeedbackSubmit = (data: { feedbackCategory: string; correctedResponse: string }) => {
+      handleFeedback('THUMBS_DOWN', data)
+      setShowFeedbackModal(false)
+    }
+
     return (
+      <>
       <div
         ref={ref}
         className={cn('flex items-end', {
@@ -131,19 +161,66 @@ const Message = forwardRef<HTMLDivElement, MessageProps>(
                     'justify-between': !message.isUserMessage,
                   }
                 )}>
-                {!message.isUserMessage && isSupported && (
-                  <Button
-                    onClick={handleSpeak}
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-2 text-zinc-500 hover:text-zinc-700"
-                  >
-                    {isSpeaking ? (
-                      <VolumeX className="h-3 w-3" />
-                    ) : (
-                      <Volume2 className="h-3 w-3" />
+                {!message.isUserMessage && (
+                  <div className="flex items-center gap-1">
+                    {isSupported && (
+                      <Button
+                        onClick={handleSpeak}
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-zinc-500 hover:text-zinc-700"
+                      >
+                        {isSpeaking ? (
+                          <VolumeX className="h-3 w-3" />
+                        ) : (
+                          <Volume2 className="h-3 w-3" />
+                        )}
+                      </Button>
                     )}
-                  </Button>
+                    
+                    {/* Feedback buttons */}
+                    {canProvideFeedback && (
+                      <>
+                        <Button
+                          onClick={handleThumbsUp}
+                          variant="ghost"
+                          size="sm"
+                          disabled={isFeedbackLoading}
+                          className={cn(
+                            "h-6 px-2",
+                            currentFeedback === 'THUMBS_UP'
+                              ? "text-green-600 hover:text-green-700"
+                              : "text-zinc-500 hover:text-green-600"
+                          )}
+                          title="This was helpful"
+                        >
+                          <ThumbsUp className={cn(
+                            "h-3 w-3",
+                            currentFeedback === 'THUMBS_UP' && "fill-current"
+                          )} />
+                        </Button>
+                        
+                        <Button
+                          onClick={handleThumbsDown}
+                          variant="ghost"
+                          size="sm"
+                          disabled={isFeedbackLoading}
+                          className={cn(
+                            "h-6 px-2",
+                            currentFeedback === 'THUMBS_DOWN'
+                              ? "text-red-600 hover:text-red-700"
+                              : "text-zinc-500 hover:text-red-600"
+                          )}
+                          title="This wasn't helpful"
+                        >
+                          <ThumbsDown className={cn(
+                            "h-3 w-3",
+                            currentFeedback === 'THUMBS_DOWN' && "fill-current"
+                          )} />
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 )}
                 <span
                   className={cn({
@@ -161,6 +238,17 @@ const Message = forwardRef<HTMLDivElement, MessageProps>(
           </div>
         </div>
       </div>
+      
+      {/* Feedback Modal */}
+      {canProvideFeedback && typeof message.text === 'string' && (
+        <FeedbackModal
+          isOpen={showFeedbackModal}
+          onClose={() => setShowFeedbackModal(false)}
+          originalMessage={message.text}
+          onSubmit={handleFeedbackSubmit}
+        />
+      )}
+      </>
     )
   }
 )

@@ -42,7 +42,7 @@ export const POST = async (req: NextRequest) => {
     data: {
       text: message,
       isUserMessage: true,
-      fileId,
+      fileId: file.id,
     },
   })
 
@@ -233,7 +233,7 @@ export const POST = async (req: NextRequest) => {
           data: {
             text: fullResponse,
             isUserMessage: false,
-            fileId,
+            fileId: file.id,
           },
         })
       } catch (error) {

@@ -3,6 +3,7 @@ import type { ExtractedImage } from '@prisma/client'
 import { getPineconeClient } from '@/lib/pinecone'
 import { extractTextWithOCR, shouldUseOCR } from '@/lib/pdf-ocr'
 import { extractImagesFromPDF } from '@/lib/pdf-image-extractor-cloudinary'
+import { processPDFWithSmartImages } from '@/lib/process-pdf-with-smart-images'
 import { OpenAIEmbeddings } from 'langchain/embeddings/openai'
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter'
 import { ChapterAwarePineconeIndexer } from '@/lib/chapter-aware-pinecone'
@@ -100,101 +101,96 @@ const onUploadComplete = async ({
       throw new Error('Failed to parse PDF content')
     }
     
-    // Extract images from PDF
-    console.log('[PDF_PROCESSING] Extracting images from PDF...')
-    const extractedImages = await extractImagesFromPDF(buffer)
-    console.log('[PDF_PROCESSING] Found', extractedImages.length, 'images')
+    // Extract images from PDF SMARTLY - only pages with actual images
+    console.log('[PDF_PROCESSING] Starting SMART image extraction...')
+    const imageResult = await processPDFWithSmartImages(
+      buffer,
+      createdFile.id,
+      20 // Extract max 20 pages with images (adjust as needed)
+    )
     
-    // Upload extracted images to UploadThing
-    const uploadedImages: ExtractedImage[] = []
-    for (let i = 0; i < extractedImages.length; i++) {
-      const image = extractedImages[i]
-      console.log(`[PDF_PROCESSING] Uploading image ${i + 1}/${extractedImages.length} from page ${image.pageNumber}`)
-      
+    let uploadedImages: ExtractedImage[] = []
+    if (imageResult.success) {
+      console.log(`[PDF_PROCESSING] ✅ Smart extraction successful! Extracted ${imageResult.imageCount} images`)
+      // Fetch the uploaded images from the database
+      uploadedImages = await db.extractedImage.findMany({
+        where: { fileId: createdFile.id }
+      })
+    } else {
+      console.error('[PDF_PROCESSING] ⚠️ Smart extraction failed:', imageResult.error)
+      console.log('[PDF_PROCESSING] Continuing without images...')
+    }
+    
+    // Try chapter-aware indexing first, fall back to regular indexing if no chapters found
+    const USE_CHAPTER_AWARE_INDEXING = true
+    let chaptersFound = false
+    
+    if (USE_CHAPTER_AWARE_INDEXING) {
+      console.log('[PDF_PROCESSING] Attempting chapter-aware indexing...')
       try {
-        // Convert buffer to File object with proper name for upload
-        const file = new File([image.imageBuffer], `page-${image.pageNumber}-image-${i + 1}.png`, { type: 'image/png' })
-        const uploadedFile = await utapi.uploadFiles(file)
+        const chapterIndexer = new ChapterAwarePineconeIndexer()
+        const { chapters, vectors } = await chapterIndexer.indexPDFWithChapters(
+          createdFile.id,
+          buffer,
+          1000, // chunk size
+          200   // chunk overlap
+        )
         
-        if (uploadedFile && 'data' in uploadedFile && uploadedFile.data) {
-          // Store image metadata in database
-          const dbImage = await db.extractedImage.create({
-            data: {
-              fileId: createdFile.id,
-              pageNumber: image.pageNumber,
-              imageUrl: uploadedFile.data.url,
-              imageKey: uploadedFile.data.key,
-              caption: image.caption || '',
-              contextBefore: image.contextBefore,
-              contextAfter: image.contextAfter,
-              nearbyText: image.nearbyText,
-              x: image.boundingBox?.x,
-              y: image.boundingBox?.y,
-              width: image.boundingBox?.width,
-              height: image.boundingBox?.height,
-              imageType: image.imageType,
-              topics: image.topics,
+        // Only save chapters if we actually found some
+        if (chapters.length > 0) {
+          chaptersFound = true
+          
+          // Use transaction to ensure atomicity and use upsert to avoid duplicates
+          await db.$transaction(async (tx) => {
+            // Delete any existing chapters for this file
+            await tx.chapter.deleteMany({
+              where: { fileId: createdFile.id }
+            })
+            
+            // Create new chapters
+            for (const chapter of chapters) {
+              const extractor = new ChapterExtractor()
+              const chapterContent = extractor.extractChapterContent(extractedText, chapter)
+              const topics = extractor.identifyTopics(chapterContent)
+              
+              await tx.chapter.create({
+                data: {
+                  fileId: createdFile.id,
+                  chapterNumber: chapter.chapterNumber,
+                  title: chapter.title,
+                  content: chapterContent,
+                  startPage: chapter.startPage,
+                  endPage: chapter.endPage,
+                  topics: {
+                    create: topics.map((topic: any) => ({
+                      topicNumber: topic.topicNumber,
+                      title: topic.title,
+                      content: topic.content,
+                      estimatedTime: topic.estimatedTime
+                    }))
+                  }
+                }
+              })
             }
+          }, {
+            maxWait: 10000, // Wait up to 10 seconds for transaction to start
+            timeout: 30000, // Allow transaction to run for up to 30 seconds
           })
           
-          uploadedImages.push(dbImage)
-          console.log(`[PDF_PROCESSING] Stored image ${i + 1} with ID: ${dbImage.id}`)
+          console.log(`[PDF_PROCESSING] ✅ Indexed ${vectors} vectors with chapter awareness`)
+          console.log(`[PDF_PROCESSING] ✅ Saved ${chapters.length} chapters to database`)
+        } else {
+          console.log('[PDF_PROCESSING] ⚠️ No chapters detected, falling back to regular indexing')
         }
-      } catch (imageError) {
-        console.error(`[PDF_PROCESSING] Error uploading image ${i + 1}:`, imageError)
-        // Continue with other images even if one fails
+      } catch (chapterError) {
+        console.error('[PDF_PROCESSING] Chapter indexing failed:', chapterError)
+        console.log('[PDF_PROCESSING] Falling back to regular indexing')
       }
     }
     
-    console.log('[PDF_PROCESSING] Successfully uploaded and stored', uploadedImages.length, 'images')
-    
-    // Use chapter-aware indexing
-    const USE_CHAPTER_AWARE_INDEXING = true // Enable to detect chapters from TOC
-    
-    if (USE_CHAPTER_AWARE_INDEXING) {
-      console.log('[PDF_PROCESSING] Using chapter-aware indexing...')
-      const chapterIndexer = new ChapterAwarePineconeIndexer()
-      const { chapters, vectors } = await chapterIndexer.indexPDFWithChapters(
-        createdFile.id,
-        buffer,
-        1000, // chunk size
-        200   // chunk overlap
-      )
-      
-      // Save chapters to database
-      // First, delete any existing chapters for this file
-      await db.chapter.deleteMany({
-        where: { fileId: createdFile.id }
-      })
-      
-      for (const chapter of chapters) {
-        const extractor = new ChapterExtractor()
-        const chapterContent = extractor.extractChapterContent(extractedText, chapter)
-        const topics = extractor.identifyTopics(chapterContent)
-        
-        await db.chapter.create({
-          data: {
-            fileId: createdFile.id,
-            chapterNumber: chapter.chapterNumber,
-            title: chapter.title,
-            content: chapterContent,
-            startPage: chapter.startPage,
-            endPage: chapter.endPage,
-            topics: {
-              create: topics.map((topic: any) => ({
-                topicNumber: topic.topicNumber,
-                title: topic.title,
-                content: topic.content,
-                estimatedTime: topic.estimatedTime
-              }))
-            }
-          }
-        })
-      }
-      
-      console.log(`[PDF_PROCESSING] Indexed ${vectors} vectors with chapter awareness`)
-      console.log(`[PDF_PROCESSING] Saved ${chapters.length} chapters to database`)
-    } else {
+    // If no chapters found or chapter indexing disabled, use regular indexing
+    if (!chaptersFound) {
+      console.log('[PDF_PROCESSING] Using regular page-based indexing...')
       // Original implementation
       // Create documents from the parsed text
       // Split by page breaks if present, otherwise treat as single document
@@ -294,7 +290,7 @@ const onUploadComplete = async ({
       // Prepare vectors for Pinecone
       const batchVectors = batch.map((doc, idx) => {
         // Find images on the same page as this chunk
-        const pageImages = uploadedImages.filter(img => img.pageNumber === doc.metadata.pageNumber)
+        const pageImages = uploadedImages.filter((img: { pageNumber: number }) => img.pageNumber === doc.metadata.pageNumber)
         
         // Check if chunk text references any images (e.g., "Figure 1", "as shown in the diagram")
         const referencedImageIds = []
@@ -325,7 +321,7 @@ const onUploadComplete = async ({
             fileId: createdFile.id,
             chunkIndex: i + idx,
             hasImages: pageImages.length > 0,
-            imageIds: pageImages.map(img => img.id),
+            imageIds: pageImages.map((img: { id: any }) => img.id),
             referencedImageIds: [...new Set(referencedImageIds)], // Remove duplicates
           },
         }
