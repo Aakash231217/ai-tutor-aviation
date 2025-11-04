@@ -56,7 +56,7 @@ const UploadDropzone = () => {
   return (
     <Dropzone
       multiple={false}
-      maxSize={100 * 1024 * 1024} // 100MB in bytes
+      maxSize={256 * 1024 * 1024} // 256MB in bytes
       accept={{
         'application/pdf': ['.pdf']
       }}
@@ -97,10 +97,10 @@ const UploadDropzone = () => {
         const [file] = rejectedFiles
         setIsUploading(false)
         
-        if (file.file.size > 100 * 1024 * 1024) {
+        if (file.file.size > 256 * 1024 * 1024) {
           toast({
             title: 'File too large',
-            description: 'Please upload a PDF file smaller than 100MB',
+            description: 'Please upload a PDF file smaller than 256MB',
             variant: 'destructive',
           })
         } else {
@@ -128,7 +128,7 @@ const UploadDropzone = () => {
                   or drag and drop
                 </p>
                 <p className='text-xs text-zinc-500'>
-                  PDF (up to 100MB)
+                  PDF (up to 256MB)
                 </p>
               </div>
 
