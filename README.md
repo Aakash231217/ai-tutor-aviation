@@ -24,6 +24,24 @@ Built with the Next.js 13.5 App Router, tRPC, TypeScript, Prisma & Tailwind
 - 🔤 100% written in TypeScript
 - 🎁 ...much more
 
+## Handling Image-Based PDFs
+
+If your PDFs are scanned documents (image-based), they need OCR pre-processing:
+
+1. **Check if your PDF needs OCR:**
+   ```bash
+   node check-pdf-ocr.js your-file.pdf
+   ```
+
+2. **Pre-process with OCR (choose one):**
+   - **Online (Easy):** Use [ILovePDF OCR](https://www.ilovepdf.com/ocr-pdf) - free for files under 15MB
+   - **Adobe Acrobat:** Tools → Scan & OCR → Recognize Text
+   - **Command Line:** `ocrmypdf input.pdf output.pdf`
+
+3. **Upload the processed PDF** to Teacher Mode
+
+See `PDF_PREPROCESSING_GUIDE.md` for detailed instructions.
+
 ## Getting started
 
 To get started with this project, run

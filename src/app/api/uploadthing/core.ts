@@ -1,7 +1,7 @@
 import { db } from '@/db'
 import type { ExtractedImage } from '@prisma/client'
 import { getPineconeClient } from '@/lib/pinecone'
-import { extractTextWithOCR, shouldUseOCR } from '@/lib/pdf-ocr'
+import { extractTextFromPDFEnhanced } from '@/lib/pdf-parser-enhanced'
 import { extractImagesFromPDF } from '@/lib/pdf-image-extractor-cloudinary'
 import { processPDFWithSmartImages } from '@/lib/process-pdf-with-smart-images'
 import { OpenAIEmbeddings } from 'langchain/embeddings/openai'
@@ -68,37 +68,43 @@ const onUploadComplete = async ({
     const arrayBuffer = await blob.arrayBuffer()
     const buffer = Buffer.from(arrayBuffer)
     
-    // Use pdf-parse directly for better compatibility
-    console.log('[PDF_PROCESSING] Parsing PDF with pdf-parse...')
-    const pdfParse = require('pdf-parse')
+    // Use enhanced PDF parser first
+    console.log('[PDF_PROCESSING] Using enhanced PDF parser...')
+    const pdfResult = await extractTextFromPDFEnhanced(buffer)
+    let extractedText = pdfResult.text
+    const totalPages = pdfResult.pageCount
+    let pageTexts = pdfResult.pageTexts
+    console.log('[PDF_PROCESSING] Enhanced parser extracted:', extractedText.length, 'characters from', totalPages, 'pages')
+    console.log('[PDF_PROCESSING] First 500 chars:', extractedText.substring(0, 500))
     
-    let pdfData
-    let extractedText: string
-    let totalPages: number
+
     
-    try {
-      pdfData = await pdfParse(buffer)
-      console.log('[PDF_PROCESSING] PDF parsed successfully')
-      console.log('[PDF_PROCESSING] Total pages:', pdfData.numpages)
-      console.log('[PDF_PROCESSING] Total text length:', pdfData.text.length)
+    // Check if we need OCR
+    const avgCharsPerPage = extractedText.length / totalPages
+    const isImageBasedPDF = avgCharsPerPage < 100 && totalPages > 0
+    
+    if (isImageBasedPDF) {
+      console.log(`[PDF_PROCESSING] Detected image-based PDF (${avgCharsPerPage.toFixed(1)} chars/page)`)
+      console.log('[PDF_PROCESSING] This PDF appears to be scanned images.')
+      console.log('[PDF_PROCESSING] Please pre-process the PDF with OCR before uploading for best results.')
       
-      extractedText = pdfData.text
-      totalPages = pdfData.numpages
-      
-      // Check if we need to use OCR
-      if (shouldUseOCR(extractedText, totalPages)) {
-        console.log('[PDF_PROCESSING] Minimal text extracted, falling back to OCR...')
-        try {
-          extractedText = await extractTextWithOCR(buffer)
-          console.log('[PDF_PROCESSING] OCR extraction complete, new text length:', extractedText.length)
-        } catch (ocrError) {
-          console.error('[PDF_PROCESSING] OCR failed, using original extraction:', ocrError)
-          // Fall back to original extraction if OCR fails
+      // Add a helpful message for image-based PDFs
+      if (extractedText.trim().length === 0) {
+        extractedText = `📸 This PDF contains ${totalPages} scanned pages (images) without searchable text.\n\n`
+        extractedText += `What this means: Your PDF is like photos of pages, not actual text.\n\n`
+        extractedText += `To make it work with Teacher Mode, you need to add a text layer using OCR:\n\n`
+        extractedText += `🔹 EASIEST: Go to ILovePDF.com/ocr-pdf (free, 2 minute process)\n`
+        extractedText += `🔹 BEST QUALITY: Adobe Acrobat → Tools → Scan & OCR → Recognize Text\n`
+        extractedText += `🔹 BULK PROCESSING: OCRmyPDF command line tool\n\n`
+        extractedText += `After OCR processing, re-upload the PDF and it will work perfectly!\n\n`
+        
+        pageTexts = []
+        for (let i = 0; i < totalPages; i++) {
+          const pageText = `Page ${i + 1}: [Scanned image - requires OCR pre-processing]`
+          pageTexts.push(pageText)
+          extractedText += pageText + '\n\n'
         }
       }
-    } catch (parseError) {
-      console.error('[PDF_PROCESSING] Error parsing PDF:', parseError)
-      throw new Error('Failed to parse PDF content')
     }
     
     // Extract images from PDF SMARTLY - only pages with actual images
@@ -116,6 +122,11 @@ const onUploadComplete = async ({
       uploadedImages = await db.extractedImage.findMany({
         where: { fileId: createdFile.id }
       })
+      
+      // Process images with OCR if needed
+      if (uploadedImages.length > 0) {
+        console.log(`[PDF_PROCESSING] Extracted ${uploadedImages.length} images from PDF`)
+      }
     } else {
       console.error('[PDF_PROCESSING] ⚠️ Smart extraction failed:', imageResult.error)
       console.log('[PDF_PROCESSING] Continuing without images...')
@@ -133,8 +144,11 @@ const onUploadComplete = async ({
           createdFile.id,
           buffer,
           1000, // chunk size
-          200   // chunk overlap
+          200,  // chunk overlap
+          uploadedImages // Pass uploaded images for OCR processing
         )
+        
+
         
         // Only save chapters if we actually found some
         if (chapters.length > 0) {
@@ -194,10 +208,11 @@ const onUploadComplete = async ({
       // Original implementation
       // Create documents from the parsed text
       // Split by page breaks if present, otherwise treat as single document
-      const pageTexts = extractedText.split(/\f/).filter((text: string) => text.trim().length > 0)
-      console.log('[PDF_PROCESSING] Split into', pageTexts.length, 'sections')
+    // Ensure pageTexts is properly defined
+    const pageDocs = pageTexts.length > 0 ? pageTexts : extractedText.split(/\f/).filter((text: string) => text.trim().length > 0)
+    console.log('[PDF_PROCESSING] Split into', pageDocs.length, 'sections')
     
-    const pageLevelDocs = pageTexts.map((text: string, index: number) => ({
+    const pageLevelDocs = pageDocs.map((text: string, index: number) => ({
       pageContent: text,
       metadata: {
         pageNumber: index + 1,
@@ -322,7 +337,7 @@ const onUploadComplete = async ({
             chunkIndex: i + idx,
             hasImages: pageImages.length > 0,
             imageIds: pageImages.map((img: { id: any }) => img.id),
-            referencedImageIds: [...new Set(referencedImageIds)], // Remove duplicates
+            referencedImageIds: [...new Set(referencedImageIds)] // Remove duplicates
           },
         }
       })

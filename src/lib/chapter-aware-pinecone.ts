@@ -16,6 +16,7 @@ interface ChapterAwareVector {
     pageNumber: number
     isChapterStart?: boolean
     isTopicStart?: boolean
+
   }
 }
 
@@ -35,22 +36,27 @@ export class ChapterAwarePineconeIndexer {
     fileId: string, 
     pdfBuffer: Buffer,
     chunkSize: number = 500,
-    chunkOverlap: number = 100
-  ) {
+    chunkOverlap: number = 100,
+    uploadedImages: any[] = []
+  ): Promise<{
+    chapters: ChapterInfo[]
+    vectors: number
+  }> {
     console.log('[CHAPTER_AWARE_INDEXER] Starting chapter-aware indexing...')
+    
+    // Parse PDF to extract text
+    const pdfParse = require('pdf-parse')
+    const pdfData = await pdfParse(pdfBuffer)
+    let fullText: string = pdfData.text
     
     // First try to extract chapters from TOC
     const tocExtractor = new TableOfContentsExtractor()
     const tocChapters = await tocExtractor.extractChaptersFromTOC(pdfBuffer)
     
     let chapters: ChapterInfo[]
-    let fullText: string
     
     if (tocChapters && tocChapters.length > 0) {
       console.log(`[CHAPTER_AWARE_INDEXER] Using ${tocChapters.length} chapters from TOC`)
-      // Just extract the full text, not chapters
-      const extractor = new ChapterExtractor()
-      fullText = await extractor.extractFullText(pdfBuffer)
       
       // Map TOC chapters to actual content
       chapters = tocChapters.map(tocChapter => ({
@@ -65,6 +71,7 @@ export class ChapterAwarePineconeIndexer {
       console.log('[CHAPTER_AWARE_INDEXER] No TOC found, falling back to pattern detection')
       // Fall back to original chapter extraction
       const extractor = new ChapterExtractor()
+      // Use the potentially OCR-enhanced text
       const result = await extractor.extractChaptersFromPDF(pdfBuffer)
       chapters = result.chapters
       fullText = result.fullText
@@ -155,6 +162,10 @@ export class ChapterAwarePineconeIndexer {
           for (let i = 0; i < chunks.length; i++) {
             const embedding = await this.embeddings.embedQuery(chunks[i])
             
+            // Calculate estimated page for this topic
+            const estimatedPage = chapter.startPage + Math.floor((topic.topicNumber - 1) * 
+              (chapter.endPage - chapter.startPage) / topics.length)
+            
             vectors.push({
               id: `${fileId}-ch${chapter.chapterNumber}-t${topic.topicNumber}-chunk${i}`,
               values: embedding,
@@ -165,8 +176,7 @@ export class ChapterAwarePineconeIndexer {
                 chapterTitle: chapter.title,
                 topicNumber: topic.topicNumber,
                 topicTitle: topic.title,
-                pageNumber: chapter.startPage + Math.floor((topic.topicNumber - 1) * 
-                  (chapter.endPage - chapter.startPage) / topics.length),
+                pageNumber: estimatedPage,
                 isChapterStart: false,
                 isTopicStart: false
               }
